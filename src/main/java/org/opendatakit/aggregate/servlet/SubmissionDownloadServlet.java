@@ -16,6 +16,8 @@
 
 package org.opendatakit.aggregate.servlet;
 
+import java.io.ByteArrayOutputStream;
+import java.io.OutputStreamWriter;
 import java.io.IOException;
 import java.io.PrintWriter;
 import java.util.Collections;
@@ -26,9 +28,11 @@ import javax.servlet.http.HttpServletResponse;
 
 import org.opendatakit.aggregate.ContextFactory;
 import org.opendatakit.aggregate.constants.ServletConsts;
+import org.opendatakit.aggregate.constants.common.BinaryOption;
 import org.opendatakit.aggregate.exception.ODKFormNotFoundException;
 import org.opendatakit.aggregate.form.FormFactory;
 import org.opendatakit.aggregate.form.IForm;
+import org.opendatakit.aggregate.format.structure.JsonFormatterWithFilters;
 import org.opendatakit.aggregate.format.structure.XmlAttachmentFormatter;
 import org.opendatakit.aggregate.format.structure.XmlFormatter;
 import org.opendatakit.aggregate.submission.Submission;
@@ -37,6 +41,9 @@ import org.opendatakit.aggregate.submission.SubmissionKeyPart;
 import org.opendatakit.common.persistence.exception.ODKDatastoreException;
 import org.opendatakit.common.web.CallingContext;
 import org.opendatakit.common.web.constants.HtmlConsts;
+
+import com.google.gson.JsonObject;
+import com.google.gson.JsonParser;
 
 /**
  * Servlet to generate the XML representation of a given submission entry and
@@ -71,6 +78,9 @@ public class SubmissionDownloadServlet extends ServletUtilBase {
 
     // verify parameters are present
     String keyString = getParameter(req, ServletConsts.FORM_ID);
+    String format = req.getParameter("format");
+    boolean xml = format == null || !format.toLowerCase().equals("json");
+
     if (keyString == null) {
       sendErrorNotEnoughParams(resp);
       return;
@@ -87,8 +97,9 @@ public class SubmissionDownloadServlet extends ServletUtilBase {
       }
       sub = Submission.fetchSubmission(parts, cc);
 
-      if (sub != null) {
-
+      if (sub == null) {
+        errorRetreivingData(resp);
+      } else if (xml) {
         resp.setCharacterEncoding(HtmlConsts.UTF8_ENCODE);
         resp.setContentType(HtmlConsts.RESP_TYPE_XML);
         addOpenRosaHeaders(resp);
@@ -103,8 +114,35 @@ public class SubmissionDownloadServlet extends ServletUtilBase {
         attach.processSubmissions(Collections.singletonList(sub), cc);
         out.write("</submission>");
         resp.setStatus(HttpServletResponse.SC_OK);
-      } else {
-        errorRetreivingData(resp);
+      } else /* JSON */ {
+        resp.setCharacterEncoding(HtmlConsts.UTF8_ENCODE);
+        resp.setContentType(HtmlConsts.RESP_TYPE_JSON);
+
+        ByteArrayOutputStream data = new ByteArrayOutputStream();
+        PrintWriter dataWriter = new PrintWriter(
+          new OutputStreamWriter(data, HtmlConsts.UTF8_ENCODE));
+
+        // format submission
+        JsonFormatterWithFilters formatter = new JsonFormatterWithFilters(
+          dataWriter,
+          form,
+          null,
+          BinaryOption.PROVIDE_LINKS,
+          true,
+          cc.getServerURL());
+        formatter.processSubmissions(Collections.singletonList(sub), cc);
+        dataWriter.flush();
+
+        JsonParser parser = new JsonParser();
+
+        // create json object
+        JsonObject entity = new JsonObject();
+        entity.addProperty("formId", form.getFormId());
+        entity.addProperty("formVersion", form.getMajorMinorVersionString());
+        entity.add("data", parser.parse(data.toString(HtmlConsts.UTF8_ENCODE)));
+
+        resp.getWriter().write(entity.toString());
+        resp.setStatus(HttpServletResponse.SC_OK);
       }
     } catch (ODKFormNotFoundException e1) {
       odkIdNotFoundError(resp);
